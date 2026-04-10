@@ -1,6 +1,12 @@
 import numpy as np
-from scipy.signal import butter, lfilter, decimate, firwin
+from scipy.signal import butter, lfilter, decimate, firwin, resample_poly
 import librosa
+from utils import *
+from typing import Iterable
+
+def downsampler(signal: np.ndarray, up, down):
+    return resample_poly(signal, up, down, window=('kaiser', 8.0))
+
 """
 class LoRaMapping:
     _ch1: float = 868_100_000.
@@ -33,11 +39,41 @@ class SignalProcessor:
         self.stretching_factor = stretching_factor
         self.Fa = self.sr / self.stretching_factor
 
-    def _anti_alias_filter(self, iq_samples: np.ndarray) -> np.ndarray:
-        order = 129
-        cutoff = (self.Fa / 2) / (self.sr / 2)
-        Fc = self.bw / 2
-        h = firwin(numtaps = order, cutoff = cutoff)
+    def truncate(self, signal: np.ndarray) -> np.ndarray:
+        nb_samples_to_cut = int(self.sr * 0.01)
+        if len(signal) < 10 * nb_samples_to_cut:
+            return signal
+        return signal[nb_samples_to_cut:-nb_samples_to_cut]
+
+    @staticmethod
+    def normalize_complex_magnitude(signal: Iterable[complex]) -> np.ndarray:
+        """
+        Normalise le module d’un tableau de nombres complexes sur [0,1]
+        en conservant la phase, puis retourne le signal reconstruit en a + jb.
+        """
+        z = np.asarray(signal, dtype=complex)
+
+        # Module et phase
+        magnitude = np.abs(z)
+        phase = np.angle(z)
+
+        # Normalisation des modules (min–max)
+        mag_min = magnitude.min()
+        mag_max = magnitude.max()
+
+        if mag_max == mag_min:
+            mag_norm = np.zeros_like(magnitude)
+        else:
+            mag_norm = (magnitude - mag_min) / (mag_max - mag_min)
+
+        # Reconstruction : mag_norm * exp(j * phase)
+        z_normalized = mag_norm * np.exp(1j * phase)
+
+        return z_normalized
+
+    @staticmethod
+    def _anti_alias_filter(iq_samples: np.ndarray, cutoff, order = 129) -> np.ndarray:
+        h = firwin(order, cutoff)
         return lfilter(h, 1.0, iq_samples)
 
     def _decimate(self, iq_samples: np.ndarray) -> np.ndarray:
@@ -53,22 +89,28 @@ class SignalProcessor:
     def _timeStretcher(self, audio: np.ndarray) -> np.ndarray:
         return librosa.effects.time_stretch(audio, rate=1/self.stretching_factor)
 
-    def compute(self, iq_samples: np.ndarray, if_offset_hz: float = 0.0) -> np.ndarray:
-        # DSP pipeline: antialiasing filter > decimation > frequency shift > output complex real part
+    def preProcess(self, iq_samples: np.ndarray) -> np.ndarray:
+        truncated = self.truncate(iq_samples)
+        normalized = self.normalize_complex_magnitude(truncated)
+        return normalized
 
-        if if_offset_hz != 0.0:
-            t = np.arange(len(iq_samples))
-            iq_samples = iq_samples * np.exp(-1j * 2 * np.pi * if_offset_hz / self.sr * t)
+    def compute(self, iq_samples: np.ndarray) -> np.ndarray:
 
+        # DSP pipeline: scaling > frequency shift > output complex real part
 
-        print("IQ filtering ...")
-        filtered = self._anti_alias_filter(iq_samples)
-        print("IQ decimation ...")
-        decimated = self._decimate(filtered)
-        print("IQ frequency shifting ...")
-        shifted = self._freqShifter(decimated)
-        print("Keeping real part ...")
+        # 1) Shifting
+        # The input BW is 125kHz wide, and we want it to be ~2kHz
+        # This is done by downsampling the signal with a factor 62.5 (or here, 63 because the function needs an integer)
+        print("Processing: downsampling to fit audio bandwidth ...")
+        scaled = downsampler(iq_samples, up=1, down=63)
+
+        print("Processing: shifting to fit audio central frequency ... ")
+        shifted = self._freqShifter(scaled)
+
+        print("Process: keeping real part ...")
         real = self._to_real(shifted)
-        print("Stretching audio ...")
-        stretched = self._timeStretcher(real)
-        return stretched
+
+        # print("Stretching audio ...")
+        # stretched = self._timeStretcher(real)
+
+        return real
