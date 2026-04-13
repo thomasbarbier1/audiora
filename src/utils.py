@@ -33,7 +33,6 @@ def show_audioSignal(signal, samplerate, title='Resulting signal (time+FFT)'):
     plt.title(title)
     plt.xlabel("Time (s)")
     plt.ylabel("Amplitude")
-    plt.show()
 
     X = np.fft.rfft(signal)
     X = np.abs(X)
@@ -95,4 +94,4 @@ def load_from_csv(filename: str) -> List[complex]:
             imag = float(row[1])
             complex_array.append(complex(real, imag))
 
-    return np.array(complex_array)
+    return complex_array
